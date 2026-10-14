@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "TransporMobileApp",
-    "slug": "TransporMobileApp",
-    "version": "1.0.0",
+    "name": "RML Transport",
+    "slug": "rml-transport",
+    "version": "6.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -21,10 +21,14 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.bamiche.RMLTransport"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
