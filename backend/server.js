@@ -57,7 +57,7 @@ const db = mysql.createPool({
   user: 'root',
   password: 'root',
   database: 'transport_app',
-  port: 3306,
+  port: 3307,
   connectionLimit: 10
 });
 

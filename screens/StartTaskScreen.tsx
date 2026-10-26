@@ -31,6 +31,10 @@ interface BinAssignment {
   deliverBinNo: string;
   collectValid?: boolean | 'checking';
   deliverValid?: boolean | 'checking';
+  collectManual?: boolean;
+  deliverManual?: boolean;
+  collectSource?: 'scan' | 'manual';
+  deliverSource?: 'scan' | 'manual';
 }
 
 const StartTaskScreen = ({ route }: any) => {
@@ -80,6 +84,10 @@ const [submitting, setSubmitting] = useState(false);
               deliverBinNo: '',
               collectValid: undefined,
               deliverValid: undefined,
+              collectManual: false,
+              deliverManual: false,
+              collectSource: undefined,
+              deliverSource: undefined,
             });
           }
           setBinAssignments(assignments);
@@ -208,11 +216,79 @@ const [submitting, setSubmitting] = useState(false);
     if (!cameraPermission?.granted) {
       const { granted } = await requestCameraPermission();
       if (!granted) {
-        Alert.alert('Permission needed', 'Camera permission is required to scan QR codes');
+        Alert.alert(
+          'Camera permission needed',
+          'Camera access is required to scan bin barcodes. You can enter the bin number manually instead.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Enter manually', onPress: () => openManualEntry({ index, field }) },
+          ]
+        );
         return;
       }
     }
     setScannerTarget({ index, field });
+  };
+
+  // Captures a value obtained from the scanner, marks its source and validates it
+  const applyScannedValue = (index: number, field: 'collectBinNo' | 'deliverBinNo', value: string) => {
+    setBinAssignments(prev => {
+      const updated = [...prev];
+      const row = { ...updated[index] };
+      if (field === 'collectBinNo') {
+        row.collectBinNo = value;
+        row.collectManual = false;
+        row.collectSource = 'scan';
+      } else {
+        row.deliverBinNo = value;
+        row.deliverManual = false;
+        row.deliverSource = 'scan';
+      }
+      updated[index] = row;
+      return updated;
+    });
+    validateBinNumber(index, field === 'collectBinNo' ? 'collect' : 'deliver', value);
+  };
+
+  // Clears a captured value so the driver can scan again or start a manual entry
+  const clearBinField = (index: number, field: 'collectBinNo' | 'deliverBinNo') => {
+    setBinAssignments(prev => {
+      const updated = [...prev];
+      const row = { ...updated[index] };
+      if (field === 'collectBinNo') {
+        row.collectBinNo = '';
+        row.collectValid = undefined;
+        row.collectSource = undefined;
+        row.collectManual = false;
+      } else {
+        row.deliverBinNo = '';
+        row.deliverValid = undefined;
+        row.deliverSource = undefined;
+        row.deliverManual = false;
+      }
+      updated[index] = row;
+      return updated;
+    });
+  };
+
+  // Reveals the manual number entry for a field. This is only reachable after the
+  // scanner has been opened (via the in-scanner fallback button) or when the camera
+  // permission is denied, ensuring scanning stays the first-choice method.
+  const openManualEntry = ({ index, field }: { index: number; field: 'collectBinNo' | 'deliverBinNo' }) => {
+    setScannerTarget(null);
+    setBinAssignments(prev => {
+      const updated = [...prev];
+      const row = { ...updated[index] };
+      if (field === 'collectBinNo') {
+        row.collectManual = true;
+        row.collectSource = 'manual';
+      } else {
+        row.deliverManual = true;
+        row.deliverSource = 'manual';
+      }
+      updated[index] = row;
+      return updated;
+    });
   };
 
   const handleSubmit = async () => {
@@ -283,9 +359,88 @@ const [submitting, setSubmitting] = useState(false);
     isExchange: job.job_type_name === 'Exchange',
   };
 
+  // Renders a single bin field as either a large scan-first button, a manual entry
+  // input, or a read-only confirmation card once a value has been captured.
+  const renderBinField = (
+    index: number,
+    field: 'collectBinNo' | 'deliverBinNo',
+    label: string
+  ) => {
+    const row = binAssignments[index];
+    const isCollect = field === 'collectBinNo';
+    const value = isCollect ? row.collectBinNo : row.deliverBinNo;
+    const valid = isCollect ? row.collectValid : row.deliverValid;
+    const manual = isCollect ? row.collectManual : row.deliverManual;
+    const source = isCollect ? row.collectSource : row.deliverSource;
+    // Preserve the original inputRefs slot mapping so auto-focus still works
+    const refSlot = config.isExchange ? (isCollect ? 1 : 0) : (isCollect ? 0 : 1);
+
+    // Manual entry (only reachable after the scanner has been used)
+    if (manual) {
+      return (
+        <View style={styles.inputWithScanContainer}>
+          <TextInput
+            ref={(ref) => {
+              if (!inputRefs.current[index]) inputRefs.current[index] = [];
+              inputRefs.current[index][refSlot] = ref;
+            }}
+            style={[styles.input, styles.flexInput, valid === false && styles.error]}
+            placeholder={`Enter ${label} #`}
+            value={value}
+            onChangeText={(v) => handleBinChange(index, field, v)}
+            onBlur={() => validateBinNumber(index, isCollect ? 'collect' : 'deliver', value)}
+            keyboardType="numeric"
+            maxLength={6}
+            autoFocus
+          />
+          <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, field)}>
+            <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    // Captured value: show a confirmation card instead of an editable input
+    if (value) {
+      const statusIcon = valid === false ? 'error-outline' : valid === 'checking' ? 'hourglass-empty' : 'check-circle';
+      const statusColor = valid === false ? '#dc2626' : valid === 'checking' ? '#f59e0b' : '#16a34a';
+      return (
+        <View style={[styles.binCard, valid === false && styles.error]}>
+          <View style={styles.binCardLeft}>
+            <MaterialIcons name={statusIcon} size={22} color={statusColor} />
+            <Text style={[styles.binCardValue, valid === false && styles.binCardValueError]}>{value}</Text>
+            {source && (
+              <View style={styles.binCardBadge}>
+                <Text style={styles.binCardBadgeText}>
+                  {source === 'manual' ? 'Manual' : 'Scanned'}
+                </Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.binCardActions}>
+            <TouchableOpacity style={styles.rescanButton} onPress={() => handleScanPress(index, field)}>
+              <MaterialIcons name="refresh" size={20} color="#3b82f6" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.binClearButton} onPress={() => clearBinField(index, field)}>
+              <MaterialIcons name="close" size={20} color="#dc2626" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
+    // Empty: scanning is the only primary action
+    return (
+      <TouchableOpacity style={styles.scanButtonLarge} onPress={() => handleScanPress(index, field)}>
+        <MaterialIcons name="qr-code-scanner" size={26} color="#ffffff" />
+        <Text style={styles.scanButtonLargeText}>Scan {label}</Text>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <View style={{ flex: 1 }}>
-      <ScrollView style={styles.container}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.title}>Start Task for Job #{job.job_id}</Text>
       <Text>Job Type: {job.job_type_name}</Text>
       
@@ -297,115 +452,30 @@ const [submitting, setSubmitting] = useState(false);
           {binAssignments.map((row, index) => (
             <View key={`deliver-${index}`} style={styles.row}>
               <Text>Deliver Bin {index + 1}</Text>
-              <View style={styles.inputWithScanContainer}>
-                <TextInput
-                  ref={(ref) => {
-                    if (!inputRefs.current[index]) inputRefs.current[index] = [];
-                    inputRefs.current[index][0] = ref;
-                  }}
-                  style={[styles.input, styles.flexInput, row.deliverValid === false && styles.error]}
-                  placeholder="Deliver Bin #"
-                  value={row.deliverBinNo}
-                  onChangeText={(value) => handleBinChange(index, 'deliverBinNo', value)}
-                  onBlur={() => validateBinNumber(index, 'deliver', row.deliverBinNo)}
-                  keyboardType="numeric"
-                  maxLength={6}
-                />
-                <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, 'deliverBinNo')}>
-                  <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
-                </TouchableOpacity>
-              </View>
+              {renderBinField(index, 'deliverBinNo', 'Deliver Bin')}
             </View>
           ))}
           <View style={styles.divider} />
           {binAssignments.map((row, index) => (
             <View key={`collect-${index}`} style={styles.row}>
               <Text>Collect Bin {index + 1}</Text>
-              <View style={styles.inputWithScanContainer}>
-                <TextInput
-                  ref={(ref) => {
-                    if (!inputRefs.current[index]) inputRefs.current[index] = [];
-                    inputRefs.current[index][1] = ref;
-                  }}
-                  style={[styles.input, styles.flexInput, row.collectValid === false && styles.error]}
-                  placeholder="Collect Bin #"
-                  value={row.collectBinNo}
-                  onChangeText={(value) => handleBinChange(index, 'collectBinNo', value)}
-                  onBlur={() => validateBinNumber(index, 'collect', row.collectBinNo)}
-                  keyboardType="numeric"
-                  maxLength={6}
-                />
-                <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, 'collectBinNo')}>
-                  <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
-                </TouchableOpacity>
-              </View>
+              {renderBinField(index, 'collectBinNo', 'Collect Bin')}
             </View>
           ))}
         </>
       ) : (
         binAssignments.map((row, index) => (
           <View key={index} style={styles.row}>
-            <Text>Item {index + 1}</Text>
+            <Text style={styles.label}>Bin Number {index + 1}</Text>
             {config.singleBinOnly ? (
-              <View style={styles.inputWithScanContainer}>
-                <TextInput
-                  ref={(ref) => {
-                    if (!inputRefs.current[index]) inputRefs.current[index] = [];
-                    inputRefs.current[index][0] = ref;
-                  }}
-                  style={[styles.input, styles.flexInput, row.collectValid === false && styles.error]}
-                  placeholder="Bin #"
-                  value={row.collectBinNo}
-                  onChangeText={(value) => handleBinChange(index, 'collectBinNo', value)}
-                  onBlur={() => validateBinNumber(index, 'collect', row.collectBinNo)}
-                  keyboardType="numeric"
-                  maxLength={6}
-                />
-                <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, 'collectBinNo')}>
-                  <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
-                </TouchableOpacity>
-              </View>
+              renderBinField(index, 'collectBinNo', 'Bin')
             ) : (
               <>
                 {config.showCollect && (
-                  <View style={styles.inputWithScanContainer}>
-                    <TextInput
-                      ref={(ref) => {
-                        if (!inputRefs.current[index]) inputRefs.current[index] = [];
-                        inputRefs.current[index][0] = ref;
-                      }}
-                      style={[styles.input, styles.flexInput, row.collectValid === false && styles.error]}
-                      placeholder="Collect Bin #"
-                      value={row.collectBinNo}
-                      onChangeText={(value) => handleBinChange(index, 'collectBinNo', value)}
-                      onBlur={() => validateBinNumber(index, 'collect', row.collectBinNo)}
-                      keyboardType="numeric"
-                      maxLength={6}
-                    />
-                    <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, 'collectBinNo')}>
-                      <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
-                    </TouchableOpacity>
-                  </View>
+                  renderBinField(index, 'collectBinNo', 'Collect Bin')
                 )}
                 {config.showDeliver && (
-                  <View style={styles.inputWithScanContainer}>
-                    <TextInput
-                      ref={(ref) => {
-                        if (!inputRefs.current[index]) inputRefs.current[index] = [];
-                        inputRefs.current[index][1] = ref;
-                      }}
-                      style={[styles.input, styles.flexInput, row.deliverValid === false && styles.error]}
-                      placeholder="Deliver Bin #"
-                      value={row.deliverBinNo}
-                      onChangeText={(value) => handleBinChange(index, 'deliverBinNo', value)}
-                      onBlur={() => validateBinNumber(index, 'deliver', row.deliverBinNo)}
-                      keyboardType="numeric"
-                      maxLength={6}
-                    />
-                    <TouchableOpacity style={styles.scanButton} onPress={() => handleScanPress(index, 'deliverBinNo')}>
-                      <MaterialIcons name="qr-code-scanner" size={24} color="#3b82f6" />
-                    </TouchableOpacity>
-                  </View>
+                  renderBinField(index, 'deliverBinNo', 'Deliver Bin')
                 )}
               </>
             )}
@@ -439,20 +509,24 @@ const [submitting, setSubmitting] = useState(false);
               onPress={() => bottomSheetRef.current?.expand()}
             >
               <Text style={styles.addChipText}>
-                {selectedLugLocks.length > 0 ? '+ Add More' : 'Tap to select lug locks'}
+                {selectedLugLocks.length > 0 ? '+ Add More' : 'Tap to select lug lockitems'}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
       )}
-      <TouchableOpacity 
-  style={[styles.button, submitting && { opacity: 0.6 }]} 
-  onPress={handleSubmit}
-  disabled={submitting}
->
-  <Text style={styles.buttonText}>{submitting ? 'Processing...' : 'Next Task'}</Text>
-      </TouchableOpacity>
       </ScrollView>
+
+      {/* Fixed footer: keeps the primary action pinned to the bottom of the screen */}
+      <View style={styles.footer}>
+        <TouchableOpacity 
+          style={[styles.button, submitting && { opacity: 0.6 }]} 
+          onPress={handleSubmit}
+          disabled={submitting}
+        >
+          <Text style={styles.buttonText}>{submitting ? 'Processing...' : 'Next Task'}</Text>
+        </TouchableOpacity>
+      </View>
 
       {job.lug_lock === 1 && (
         <BottomSheet
@@ -513,13 +587,13 @@ const [submitting, setSubmitting] = useState(false);
         <Modal visible={true} animationType="slide" onRequestClose={() => setScannerTarget(null)}>
           <View style={styles.scannerContainer}>
             <CameraView
-              style={StyleSheet.absoluteFillObject}
+              style={StyleSheet.absoluteFill}
               onBarcodeScanned={(result) => {
                 if (result.data) {
                   // Only allow numeric input and limit to 6 digits, simulating keyboard input
                   const numericValue = result.data.replace(/[^0-9]/g, '').substring(0, 6);
                   if (numericValue) {
-                    handleBinChange(scannerTarget.index, scannerTarget.field, numericValue);
+                    applyScannedValue(scannerTarget.index, scannerTarget.field, numericValue);
                   }
                   setScannerTarget(null);
                 }
@@ -528,7 +602,7 @@ const [submitting, setSubmitting] = useState(false);
                 barcodeTypes: ['qr', 'code128', 'code39', 'ean13', 'ean8', 'upc_e', 'upc_a'],
               }}
             />
-            <View style={[StyleSheet.absoluteFillObject, styles.scannerOverlay]}>
+            <View style={[StyleSheet.absoluteFill, styles.scannerOverlay]}>
               <View style={styles.scannerHeader}>
                 <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setScannerTarget(null)}>
                   <MaterialIcons name="close" size={28} color="#fff" />
@@ -539,6 +613,13 @@ const [submitting, setSubmitting] = useState(false);
               </View>
               <View style={styles.scannerFooter}>
                 <Text style={styles.scannerFooterText}>Align barcode within the frame to scan</Text>
+                <TouchableOpacity
+                  style={styles.manualFallbackButton}
+                  onPress={() => scannerTarget && openManualEntry(scannerTarget)}
+                >
+                  <MaterialIcons name="keyboard" size={18} color="#3b82f6" />
+                  <Text style={styles.manualFallbackText}>No barcode? Enter number manually</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -552,6 +633,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 20,
+   
 
   },
   title: {
@@ -593,6 +675,98 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderTopRightRadius: 8,
     borderBottomRightRadius: 8,
+  },
+  scanButtonLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 56,
+    backgroundColor: '#3b82f6',
+    borderRadius: 8,
+    gap: 8,
+    marginBottom: 10,
+  },
+  scanButtonLargeText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  binCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 56,
+    borderWidth: 1,
+    borderColor: '#16a34a',
+    backgroundColor: '#f0fdf4',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
+  },
+  binCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  binCardValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#101828',
+    letterSpacing: 1,
+  },
+  binCardValueError: {
+    color: '#dc2626',
+  },
+  binCardBadge: {
+    backgroundColor: '#dbeafe',
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  binCardBadgeText: {
+    fontSize: 11,
+    color: '#1e40af',
+    fontWeight: '600',
+  },
+  binCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rescanButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#eff6ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  binClearButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#fef2f2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manualFallbackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+  },
+  manualFallbackText: {
+    color: '#3b82f6',
+    fontSize: 14,
+    fontWeight: '600',
   },
   error: {
     borderColor: 'red',
@@ -656,7 +830,17 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 8,
     alignItems: 'center',
-    marginBottom: 30,
+  },
+  footer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 20,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#f2f4f7',
+  },
+  scrollContent: {
+    paddingBottom: 12,
   },
   buttonText: {
     color: '#ffffff',
